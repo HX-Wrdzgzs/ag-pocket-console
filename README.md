@@ -2,13 +2,13 @@
 
 Mobile approval and supervision console for Google Antigravity agents.
 
-AG Pocket Console is an experimental Codex Mobile-style control surface for Google Antigravity and Antigravity IDE. It focuses on remote human approval, auditability, and safe command execution through the shared `PreToolUse` hook layer.
+AG Pocket Console is an experimental Codex Mobile-style control surface for Google Antigravity and Antigravity IDE. It focuses on remote human approval, auditability, and safer command execution through the shared `PreToolUse` hook layer instead of private IDE APIs.
 
-This repository is currently in the **MVP-0 / protocol verification** stage. The first goal is to prove that Antigravity can invoke a hook before `run_command`, pass structured JSON through stdin, and accept a structured decision through stdout.
+The repository is currently in **MVP-1 / local approval loop** work. MVP-0 hook protocol verification is represented by the debug hook, while the daemon and approval hook already contain the first local approval-path skeleton.
 
 ## What this is
 
-AG Pocket Console is intended to let a phone review and approve sensitive Antigravity agent actions.
+AG Pocket Console is intended to let a phone or local browser review sensitive Antigravity agent actions before they run.
 
 ```text
 Antigravity CLI / IDE
@@ -19,12 +19,12 @@ AG Pocket hook script
         ↓
 ag-pocket-daemon on localhost
         ↓
-Cloudflare Tunnel + Access
+Local browser first, then Cloudflare Tunnel + Access
         ↓
 Android PWA / Android app
 ```
 
-The target product is a mobile companion console that can show approval cards, command details, workspace context, risk level, and audit history.
+The target product is a mobile companion console that can show approval cards, command details, workspace context, risk level, pending status, approval expiry, and audit history.
 
 ## What this is not
 
@@ -36,56 +36,30 @@ This is not an attempt to depend on private Antigravity IDE APIs for the first M
 
 If the hook cannot safely determine whether an action should proceed, it should fail closed and deny the operation.
 
-## MVP roadmap
+## Current implementation
 
-### MVP-0: Hook protocol verification
+Implemented:
 
-Prove the basic Antigravity hook protocol.
+- MVP plan document
+- technical report
+- debug `PreToolUse` hook that captures raw stdin payloads
+- approval `PreToolUse` hook that sends approval requests to a local daemon
+- local Fastify daemon
+- SQLite-backed `approvals` table
+- loopback + bearer-token protection for `/internal/*`
+- approval TTL expiry
+- risk classification skeleton for command lines
+- internal approval creation and status polling endpoints
 
-- Configure `PreToolUse` with `matcher: "run_command"`.
-- Run `packages/hook/pre-tool-use-debug.js`.
-- Capture real stdin payloads in `~/.ag-pocket/debug/`.
-- Test `{ "decision": "allow" }`.
-- Test `{ "decision": "deny", "reason": "AG Pocket test deny" }`.
+Not implemented yet:
 
-### MVP-1: Local approval loop
-
-Build the local approval path.
-
-```text
-Antigravity run_command
-        ↓
-Hook
-        ↓
-POST /internal/approvals
-        ↓
-Local daemon stores pending approval
-        ↓
-Local browser approves or rejects
-        ↓
-Hook polls approval status
-        ↓
-Hook returns decision JSON
-```
-
-### MVP-2: Remote mobile approval
-
-Expose the daemon through Cloudflare Tunnel and Cloudflare Access.
-
-- Mobile PWA
-- WebSocket approval push
+- browser approval UI
+- mobile PWA
 - Cloudflare Access JWT verification
-- `GET /api/approvals?status=pending` reconnect recovery
-
-### MVP-3: Safety and audit hardening
-
-- SQLite audit logs
+- public `/api/*` approval endpoints
+- WebSocket approval push
 - command masking
-- approval expiry
-- risk levels
-- local shared secret
-- Cloudflare email audit
-- fail-closed behavior
+- full audit log review UI
 
 ## Repository layout
 
@@ -106,7 +80,7 @@ packages/
 
 ## Hook decision contract
 
-The hook should write only protocol JSON to stdout.
+The hook must write only protocol JSON to stdout. Diagnostic logs must go to stderr.
 
 Allow:
 
@@ -125,8 +99,6 @@ Force local review:
 ```json
 { "decision": "force_ask", "reason": "Requires local human verification." }
 ```
-
-Diagnostic logs should go to stderr, not stdout.
 
 ## Quick start: MVP-0 debug hook
 
@@ -176,15 +148,28 @@ Run an Antigravity command that triggers `run_command`, then inspect:
 
 The captured files are the real stdin payloads from Antigravity.
 
-## Local daemon skeleton
+## Quick start: local approval skeleton
 
-The daemon currently exposes the internal approval API skeleton.
+Install and start the local daemon:
 
 ```bash
 cd packages/daemon
 npm install
+```
+
+PowerShell:
+
+```powershell
 $env:AG_DAEMON_SECRET="replace-with-a-long-random-secret"
 npm run dev
+```
+
+Optional environment variables:
+
+```env
+AG_DAEMON_PORT=8787
+AG_DAEMON_DB=ag-pocket.sqlite
+AG_APPROVAL_TTL_MS=45000
 ```
 
 Health check:
@@ -192,6 +177,90 @@ Health check:
 ```text
 http://127.0.0.1:8787/healthz
 ```
+
+Then copy and configure the approval hook:
+
+```powershell
+copy .\packages\hook\pre-tool-use-approval.js $env:USERPROFILE\.ag-pocket\pre-tool-use-approval.js
+```
+
+Example hook command:
+
+```json
+{
+  "PreToolUse": [
+    {
+      "type": "command",
+      "matcher": "run_command",
+      "command": "node C:\\Users\\<user>\\.ag-pocket\\pre-tool-use-approval.js",
+      "windows": "node C:\\Users\\<user>\\.ag-pocket\\pre-tool-use-approval.js",
+      "timeout": 60
+    }
+  ]
+}
+```
+
+The approval hook requires the same `AG_DAEMON_SECRET` environment variable as the daemon. It posts command context to `/internal/approvals`, polls `/internal/approvals/:id`, and denies when the daemon is unavailable, approval expires, or polling times out.
+
+## Internal API
+
+```text
+POST /internal/approvals
+GET  /internal/approvals/:id
+GET  /healthz
+```
+
+`/internal/*` accepts only loopback requests and requires:
+
+```text
+Authorization: Bearer <AG_DAEMON_SECRET>
+```
+
+## Roadmap
+
+### MVP-0: Hook protocol verification
+
+- Configure `PreToolUse` with `matcher: "run_command"`.
+- Run `packages/hook/pre-tool-use-debug.js`.
+- Capture real stdin payloads in `~/.ag-pocket/debug/`.
+- Test `{ "decision": "allow" }`.
+- Test `{ "decision": "deny", "reason": "AG Pocket test deny" }`.
+
+### MVP-1: Local approval loop
+
+```text
+Antigravity run_command
+        ↓
+Hook
+        ↓
+POST /internal/approvals
+        ↓
+Local daemon stores pending approval
+        ↓
+Local browser approves or rejects
+        ↓
+Hook polls approval status
+        ↓
+Hook returns decision JSON
+```
+
+### MVP-2: Remote mobile approval
+
+- Cloudflare Tunnel
+- mobile PWA
+- WebSocket approval push
+- Cloudflare Access JWT verification
+- `GET /api/approvals?status=pending` reconnect recovery
+
+### MVP-3: Safety and audit hardening
+
+- SQLite audit review UI
+- command masking
+- approval expiry controls
+- risk levels
+- local shared secret hardening
+- Cloudflare email audit
+- fail-closed behavior
 
 ## Security model
 
@@ -209,27 +278,7 @@ Remote mobile boundary:
 Cloudflare Access JWT + daemon-side issuer/audience validation
 ```
 
-The remote mobile API must not be treated as trusted only because it is behind a tunnel. The daemon must verify `Cf-Access-Jwt-Assertion` itself.
-
-## Current status
-
-Implemented:
-
-- MVP plan document
-- technical report
-- debug hook
-- approval hook skeleton
-- daemon package skeleton
-- local `/internal/approvals` API skeleton
-
-Not implemented yet:
-
-- mobile PWA
-- Cloudflare Access JWT verification
-- WebSocket push
-- browser approval UI
-- command masking
-- full audit log table
+The remote mobile API must not be treated as trusted only because it is behind a tunnel. The daemon must verify `Cf-Access-Jwt-Assertion` itself before accepting remote approval decisions.
 
 ## License
 
