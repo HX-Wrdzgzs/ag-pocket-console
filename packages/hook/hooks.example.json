@@ -1,0 +1,11 @@
+{
+  "PreToolUse": [
+    {
+      "type": "command",
+      "matcher": "run_command",
+      "command": "node C:\\Users\\<user>\\.ag-pocket\\pre-tool-use-debug.js",
+      "windows": "node C:\\Users\\<user>\\.ag-pocket\\pre-tool-use-debug.js",
+      "timeout": 30
+    }
+  ]
+}
